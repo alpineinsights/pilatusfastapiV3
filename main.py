@@ -47,8 +47,11 @@ conversation_contexts = {}
 def initialize_openrouter():
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     
-    if not OPENROUTER_API_KEY:
-        logger.error("OpenRouter API key not found")
+    # Log the loaded API key (or lack thereof)
+    if OPENROUTER_API_KEY:
+        logger.info(f"OpenRouter API Key loaded successfully (length: {len(OPENROUTER_API_KEY)})")
+    else:
+        logger.error("OpenRouter API key NOT FOUND in environment variables")
         return None
     
     try:
