@@ -45,7 +45,7 @@ conversation_contexts = {}
 
 # Initialize OpenRouter client for all models
 def initialize_openrouter():
-    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     
     if not OPENROUTER_API_KEY:
         logger.error("OpenRouter API key not found")
