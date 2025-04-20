@@ -2,15 +2,14 @@ import pandas as pd
 import os
 import tempfile
 import uuid
-import google.generativeai as genai
 import time
 import logging
+from openai import OpenAI
 from utils import QuartrAPI, AWSS3StorageHandler, TranscriptProcessor
 import aiohttp
 import asyncio
 from typing import List, Dict, Tuple, Any, Optional
 import json
-import anthropic
 import requests
 from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
 import io
@@ -23,7 +22,6 @@ try:
 except ImportError:
     # Log warning instead of failing
     print("Warning: PyMuPDF (fitz) not installed. PDF generation functionality may be limited.")
-from anthropic import Anthropic
 from utils_helper import process_company_documents, initialize_claude
 from datetime import datetime
 from logging_config import setup_logging
@@ -85,19 +83,29 @@ def load_company_data():
         return None
     return pd.DataFrame(companies)
 
-# Initialize Gemini model
-def initialize_gemini():
-    if not GEMINI_API_KEY:
-        st.error("Gemini API key not found in Streamlit secrets")
+# Initialize OpenRouter client for all models
+def initialize_openrouter():
+    OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "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")
+    
+    if not OPENROUTER_API_KEY:
+        logger.error("OpenRouter API key not found")
         return None
     
     try:
-        # Configure the Gemini API with your API key
-        genai.configure(api_key=GEMINI_API_KEY)
-        return True
+        # Initialize the OpenAI client with OpenRouter base URL
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+        
+        return client
     except Exception as e:
-        st.error(f"Error initializing Gemini: {str(e)}")
+        logger.error(f"Error initializing OpenRouter client: {str(e)}")
         return None
+
+# Initialize Gemini model - keeping for backward compatibility
+def initialize_gemini():
+    return initialize_openrouter()
 
 # Initialize Claude client
 def initialize_claude():
@@ -169,7 +177,7 @@ def extract_valid_json(response: Dict[str, Any]) -> Dict[str, Any]:
 
 # Function to call Perplexity API
 async def query_perplexity(query: str, company_name: str, conversation_context=None) -> Tuple[str, List[Dict]]:
-    """Call Perplexity API with a financial analyst prompt for the specified company
+    """Call Perplexity API with a financial analyst prompt for the specified company using OpenRouter
     
     Args:
         query: The user's query
@@ -179,15 +187,15 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
     Returns:
         Tuple[str, List[Dict]]: The response content and a list of citation objects
     """
-    if not PERPLEXITY_API_KEY:
-        logger.error("Perplexity API key not found")
-        return "Error: Perplexity API key not found", []
+    
+    client = initialize_openrouter()
+    if not client:
+        logger.error("OpenRouter client not initialized")
+        return "Error: OpenRouter client not initialized", []
     
     try:
-        logger.info(f"Perplexity API: Starting request for query about {company_name}")
+        logger.info(f"OpenRouter Perplexity API: Starting request for query about {company_name}")
         start_time = time.time()
-        
-        url = "https://api.perplexity.ai/chat/completions"
         
         # Build conversation history for context (safely)
         conversation_history = ""
@@ -198,167 +206,150 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
         # Create system prompt for financial analysis instructions only
-        system_prompt = "You are a senior financial analyst on listed equities. Give comprehensive and detailed responses. Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation."
+        system_prompt = f"""
+        You are a helpful financial analyst assistant. The user is researching information about {company_name}.
         
-        # Create user message with research context and the original query
-        user_message = f"I am doing research on this listed company: {company_name}\n\n{query}\n\n{conversation_history}"
+        Make your answers as informative and well-structured as possible, organizing facts and figures in a clear and helpful way.
+        Always cite your sources with URL references when possible. 
+        Use only reliable sources, focusing on financial news, company reports, and expert analysis.
+        {conversation_history}
+        """
         
-        payload = {
-            "model": "sonar-reasoning-pro",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            "max_tokens": 2000,
-            "temperature": 0.2,
-            "web_search_options": {"search_context_size": "high"}
-        }
+        # Create message structure
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query}
+        ]
         
-        headers = {
-            "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        # Set timeout to prevent hanging requests
-        timeout = aiohttp.ClientTimeout(total=45)  # 45 second timeout
-        
-        # Use aiohttp to make the request asynchronously
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                logger.info("Perplexity API: Sending request to API server")
-                async with session.post(url, json=payload, headers=headers) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"Perplexity API returned error {response.status}: {error_text}")
-                        return f"Error: Perplexity API returned status {response.status}", []
-                    
-                    logger.info("Perplexity API: Received response from server")
-                    response_json = await response.json()
-                    elapsed = time.time() - start_time
-                    logger.info(f"Perplexity API: Response received in {elapsed:.2f} seconds")
-                    
-                    # Log the raw response for debugging
-                    logger.info(f"Perplexity API raw response structure: {list(response_json.keys())}")
-                    
-                    # Extract citations if present
-                    citations = response_json.get("citations", [])
-                    logger.info(f"Perplexity API: Found {len(citations)} citations")
-                    # Log the format and content of the first few citations
-                    if citations:
-                        logger.info(f"Citation type: {type(citations)}")
-                        for i, citation in enumerate(citations[:3]):  # Log first 3 citations
-                            logger.info(f"Citation {i} type: {type(citation)}")
-                            logger.info(f"Citation {i} content: {citation}")
-                    else:
-                        logger.info("No citations found in Perplexity response")
-                    
-                    # Simplified extraction - just get the text content directly
-                    if "choices" in response_json and len(response_json["choices"]) > 0:
-                        if "message" in response_json["choices"][0] and "content" in response_json["choices"][0]["message"]:
-                            content = response_json["choices"][0]["message"]["content"]
-                            
-                            # If content contains a </think> tag, extract everything after it
-                            if "</think>" in content:
-                                content = content.split("</think>", 1)[1].strip()
-                            
-                            return content, citations
-                    
-                    # Fallback if we couldn't extract the content using the above method
-                    try:
-                        parsed_content = extract_valid_json(response_json)
-                        if isinstance(parsed_content, dict) and "content" in parsed_content:
-                            return parsed_content["content"], citations
-                        return str(parsed_content), citations
-                    except Exception as e:
-                        logger.error(f"Error parsing Perplexity response: {e}")
-                        return "Error processing Perplexity response. Please check logs for details.", []
-        except asyncio.TimeoutError:
-            logger.error("Perplexity API request timed out after 45 seconds")
-            return "Error: Perplexity API request timed out. Please try again later.", []
-        except asyncio.CancelledError:
-            logger.info("Perplexity API request was cancelled")
-            raise  # Re-raise the CancelledError to allow proper cleanup
-        
-    except asyncio.CancelledError:
-        logger.warning("Perplexity API task was cancelled")
-        raise  # Re-raise to allow proper cleanup
-    except Exception as e:
-        logger.error(f"Error calling Perplexity API: {str(e)}")
-        return f"Error calling Perplexity API: {str(e)}", []
-
-# Function to call Claude with combined outputs
-def query_claude(query: str, company_name: str, gemini_output: str, perplexity_output: str, conversation_context=None) -> str:
-    """Call Claude API with combined Gemini and Perplexity outputs for final synthesis"""
-    logger.info("Claude API: Starting synthesis process")
-    start_time = time.time()
-    
-    client = initialize_claude()
-    if not client:
-        return "Error initializing Claude client"
-    
-    try:
-        # Build conversation history for context (safely)
-        conversation_history = ""
-        if conversation_context:
-            conversation_history = "\n\nPREVIOUS CONVERSATION CONTEXT:\n"
-            for entry in conversation_context:
-                conversation_history += f"Question: {entry['query']}\n"
-                conversation_history += f"Answer: {entry['summary']}\n\n"
-        
-        # Create prompt for Claude
-        prompt = f"""You are a senior financial analyst on listed equities. Here is a question on {company_name}: {query}. 
-Give a comprehensive and detailed response using ONLY the context provided below. Do not use your general knowledge or the Internet. 
-If you encounter conflicting information between sources, prioritize the most recent source unless there's a specific reason not to (e.g., if the newer source explicitly references and validates the older information).
-If the most recent available data is more than 6 months old, explicitly mention this in your response and caution that more recent developments may not be reflected in your analysis.
-Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation.{conversation_history}
-
-Tone and format:
-- Provide clear, detailed, and accurate information tailored to professional investors.
-- When appropriate, for instance when the response involves a lot of figures, format your response in a table.
-- If there are conflicting views or data points in different sources, acknowledge this and provide a balanced perspective.
-- When appropriate, highlight any potential risks, opportunities, or trends that may not be explicitly stated in the query but are relevant to the analysis.
-- If you don't have sufficient information to answer a query comprehensively, state this clearly and provide the best analysis possible with the available data.
-- Recognize this might be a follow-up question to previous conversation. If so, provide a coherent response that acknowledges the conversation history.
-- Be prepared to explain financial metrics, ratios, or industry-specific terms if requested.
-- Maintain a professional and objective tone throughout your responses.
-
-Remember, your goal is to provide valuable, data-driven insights that can aid professional investors in their decision-making process regarding the selected company, leveraging ONLY the provided context and NEVER using training data from your general knowledge.
-
-Here is the context:
-
-GEMINI OUTPUT (Based on company documents):
-{gemini_output}
-
-PERPLEXITY OUTPUT (Based on web search):
-{perplexity_output}
-"""
-        
-        logger.info(f"Claude API: Sending request with prompt length {len(prompt)} characters")
+        # Call Perplexity API via OpenRouter
+        logger.info("OpenRouter Perplexity API: Sending request")
         api_start_time = time.time()
         
-        # Call Claude API with the updated model name
-        message = client.messages.create(
-            model="claude-3-7-sonnet-20250219",
-            max_tokens=4000,
-            temperature=0.2,
-            system="You are a senior financial analyst providing detailed analysis for professional investors.",
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+        response = client.chat.completions.create(
+            model="perplexity/sonar-reasoning-pro",
+            messages=messages,
+            temperature=0.1,
+            max_tokens=4000
         )
         
         api_time = time.time() - api_start_time
-        logger.info(f"Claude API: Received response in {api_time:.2f} seconds")
+        logger.info(f"OpenRouter Perplexity API: Received response in {api_time:.2f} seconds")
         
-        response_text = message.content[0].text
+        content = response.choices[0].message.content
+        
+        # Extract citations if present
+        citations = []
+        
+        # Check for citations in the content and extract them
+        citation_regex = r'\[(.*?)\]\((https?://[^\s\)]+)\)'
+        matches = re.findall(citation_regex, content)
+        
+        for i, (title, url) in enumerate(matches):
+            citations.append({
+                "id": i + 1,
+                "title": title.strip(),
+                "url": url.strip()
+            })
+        
         total_time = time.time() - start_time
-        logger.info(f"Claude API: Total processing time: {total_time:.2f} seconds")
+        logger.info(f"OpenRouter Perplexity API: Total processing time: {total_time:.2f} seconds")
         
-        return response_text
-        
+        return content, citations
     except Exception as e:
-        logger.error(f"Error calling Claude API: {str(e)}")
-        return f"Error calling Claude API: {str(e)}"
+        logger.error(f"Error using OpenRouter Perplexity API: {str(e)}")
+        
+        error_details = str(e)
+        if "rate limit" in error_details.lower() or "429" in error_details:
+            return "Error: Rate limit exceeded. Please try again in a moment.", []
+        
+        return f"Error: {str(e)}", []
+
+# Function to call Claude with combined outputs
+def query_claude(query: str, company_name: str, gemini_output: str, perplexity_output: str, conversation_context=None) -> str:
+    """Call Claude API with combined Gemini and Perplexity outputs for final synthesis using OpenRouter"""
+    
+    client = initialize_openrouter()
+    if not client:
+        logger.error("OpenRouter client not initialized")
+        return "Error: OpenRouter client not initialized"
+    
+    try:
+        logger.info("OpenRouter Claude API: Starting request")
+        start_time = time.time()
+        
+        # Build conversation history for context (safely)
+        conversation_history = ""
+        if conversation_context:
+            conversation_history = "\n\nPrevious conversation:\n"
+            for entry in conversation_context:
+                conversation_history += f"Question: {entry['query']}\n"
+                conversation_history += f"Answer: {entry['summary']}\n\n"
+                
+        # Create system prompt
+        system_prompt = f"""
+        You are a senior financial analyst assistant. The user is asking about {company_name}.
+        
+        You have been provided with analysis from two sources:
+        1. A document analysis that analyzed company-specific documents (financial reports, transcripts)
+        2. A web search that searched for publicly available information
+        
+        Base your response primarily on this input data. If the sources contradict each other,
+        favor the document analysis for company-specific facts.
+        
+        Make your answers informative and well-structured, organizing facts and figures in a clear
+        and helpful way. Focus on factual information and provide helpful context about financial metrics.
+        
+        Present a balanced analysis without making specific investment recommendations.
+        """
+        
+        # Format the input to the Claude API
+        content = f"""
+        USER QUERY: {query}
+        
+        GEMINI OUTPUT (Based on company documents):
+        {gemini_output}
+        
+        PERPLEXITY OUTPUT (Web search):
+        {perplexity_output}
+        
+        {conversation_history}
+        """
+        
+        # Create message structure
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content}
+        ]
+        
+        # Call Claude API via OpenRouter
+        logger.info("OpenRouter Claude API: Sending request")
+        api_start_time = time.time()
+        
+        response = client.chat.completions.create(
+            model="anthropic/claude-3.7-sonnet",
+            messages=messages,
+            temperature=0.1,
+            max_tokens=4000
+        )
+        
+        api_time = time.time() - api_start_time
+        logger.info(f"OpenRouter Claude API: Received response in {api_time:.2f} seconds")
+        
+        # Extract the text content from the response
+        final_response = response.choices[0].message.content
+        
+        total_time = time.time() - start_time
+        logger.info(f"OpenRouter Claude API: Total processing time: {total_time:.2f} seconds")
+        
+        return final_response
+    except Exception as e:
+        logger.error(f"Error using OpenRouter Claude API: {str(e)}")
+        
+        error_details = str(e)
+        if "rate limit" in error_details.lower() or "429" in error_details:
+            return "Error: Rate limit exceeded. Please try again in a moment."
+        
+        return f"Error: {str(e)}"
 
 # Function to process company documents
 async def process_company_documents(company_id: str, company_name: str, event_type: str = "all") -> List[Dict]:
@@ -575,23 +566,15 @@ async def query_gemini_async(query: str, file_paths: List[str], conversation_con
     return await loop.run_in_executor(None, lambda: query_gemini(query, file_paths, conversation_context))
 
 def query_gemini(query: str, file_paths: List[str], conversation_context=None) -> str:
-    """Query Gemini model with context from files"""
+    """Query Gemini model with context from files using OpenRouter"""
     try:
-        logger.info(f"Gemini API: Starting analysis with {len(file_paths)} documents")
+        logger.info(f"OpenRouter Gemini API: Starting analysis with {len(file_paths)} documents")
         start_time = time.time()
         
-        # Make sure Gemini is initialized
-        if not initialize_gemini():
-            return "Error initializing Gemini client"
-        
-        # Create a model instance with proper configuration
-        model = genai.GenerativeModel(
-            'gemini-2.0-flash',
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=7000
-            )
-        )
+        # Make sure OpenRouter client is initialized
+        client = initialize_openrouter()
+        if not client:
+            return "Error initializing OpenRouter client"
         
         # Build conversation history for context (safely)
         conversation_history = ""
@@ -601,51 +584,66 @@ def query_gemini(query: str, file_paths: List[str], conversation_context=None) -
                 conversation_history += f"Question: {entry['query']}\n"
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
-        # Prepare files and content parts
+        # Prepare contents for messages
         contents = []
+        file_processing_time = time.time()
         
-        # Add files to contents
-        logger.info("Gemini API: Processing document files")
-        file_start_time = time.time()
+        # Process files
+        logger.info("OpenRouter Gemini API: Processing document files")
         for file_path in file_paths:
             try:
-                # Open the file and create a content part
+                # Open the file for binary reading
                 with open(file_path, 'rb') as f:
                     file_data = f.read()
-                    
-                # Add file data as content part
-                file_mime_type = 'application/pdf'  # Assuming all files are PDFs
+                
+                # Add file as a base64-encoded image part for message content
+                import base64
+                base64_data = base64.b64encode(file_data).decode("utf-8")
                 contents.append({
-                    'mime_type': file_mime_type,
-                    'data': file_data
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:application/pdf;base64,{base64_data}"
+                    }
                 })
             except Exception as e:
-                st.error(f"Error processing file for Gemini: {str(e)}")
+                logger.error(f"Error processing file for OpenRouter Gemini: {str(e)}")
         
-        file_processing_time = time.time() - file_start_time
-        logger.info(f"Gemini API: Processed {len(contents)} files in {file_processing_time:.2f} seconds")
+        # Add text content part
+        contents.append({
+            "type": "text",
+            "text": f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'\n\n{conversation_history}"
+        })
+        
+        # Create message structure
+        messages = [{"role": "user", "content": contents}]
+        
+        file_processing_time = time.time() - file_processing_time
+        logger.info(f"OpenRouter Gemini API: Processed {len(file_paths)} files in {file_processing_time:.2f} seconds")
         
         if not contents:
-            return "No files were successfully processed for Gemini"
-        
-        # Add the prompt as the final content
-        prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'\n\n{conversation_history}"
-        contents.append(prompt)
+            return "No files were successfully processed for OpenRouter Gemini"
         
         # Generate content with files as context
-        logger.info("Gemini API: Sending request to API")
+        logger.info("OpenRouter Gemini API: Sending request to API")
         api_start_time = time.time()
-        response = model.generate_content(contents)
+        
+        response = client.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=messages,
+            max_tokens=7000,
+            temperature=0.1
+        )
+        
         api_time = time.time() - api_start_time
-        logger.info(f"Gemini API: Received response in {api_time:.2f} seconds")
+        logger.info(f"OpenRouter Gemini API: Received response in {api_time:.2f} seconds")
         
         total_time = time.time() - start_time
-        logger.info(f"Gemini API: Total processing time: {total_time:.2f} seconds")
+        logger.info(f"OpenRouter Gemini API: Total processing time: {total_time:.2f} seconds")
         
         # Return the response text
-        return response.text
+        return response.choices[0].message.content
     except Exception as e:
-        st.error(f"Error querying Gemini: {str(e)}")
+        logger.error(f"Error querying OpenRouter Gemini: {str(e)}")
         return f"An error occurred while processing your query: {str(e)}"
 
 # Main UI components
