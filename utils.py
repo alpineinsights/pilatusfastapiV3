@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import re
 import unicodedata
 from dotenv import load_dotenv
 from reportlab.lib import colors

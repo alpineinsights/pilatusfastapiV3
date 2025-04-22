@@ -7,6 +7,7 @@ import time
 import logging
 import json
 import re
+import pandas as pd
 from openai import OpenAI
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Any, Tuple
