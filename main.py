@@ -15,6 +15,7 @@ from supabase_client import get_quartrid_by_name
 from logger import logger
 from urllib.parse import urlparse, unquote  # For parsing citation URLs
 import tempfile
+import base64
 
 # Load environment variables
 load_dotenv()
@@ -219,7 +220,7 @@ def query_claude(query: str, company_name: str, gemini_output: str, perplexity_o
         return "Error: OpenRouter client not initialized"
     
     try:
-        logger.info("OpenRouter Claude API: Starting request")
+        logger.info("Starting Claude synthesis process")
         start_time = time.time()
         
         # Build conversation history for context (safely)
@@ -268,9 +269,9 @@ PERPLEXITY OUTPUT (Based on web search):
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                # Call Claude API via OpenRouter
-                logger.info(f"OpenRouter Claude API: Sending request (attempt {attempt}/{max_retries})")
-                api_start_time = time.time()
+                # Call Claude API via OpenRouter (only log first attempt or errors)
+                if attempt == 1:
+                    logger.info("Calling Claude API via OpenRouter")
                 
                 response = client.chat.completions.create(
                     model="anthropic/claude-3.7-sonnet",
@@ -279,51 +280,47 @@ PERPLEXITY OUTPUT (Based on web search):
                     max_tokens=4000
                 )
                 
-                api_time = time.time() - api_start_time
-                logger.info(f"OpenRouter Claude API: Received response in {api_time:.2f} seconds")
-                
                 # Check if response has the expected structure
                 if hasattr(response, 'choices') and response.choices and len(response.choices) > 0:
                     if hasattr(response.choices[0], 'message') and response.choices[0].message:
                         if hasattr(response.choices[0].message, 'content') and response.choices[0].message.content:
                             final_response = response.choices[0].message.content
-                            logger.info(f"Successfully extracted Claude response, length: {len(final_response)} characters")
+                            logger.info(f"Claude synthesis completed successfully ({len(final_response)} chars)")
                             # Success! Break out of retry loop
                             break
                         else:
-                            logger.error(f"Claude response missing content attribute (attempt {attempt}/{max_retries})")
+                            logger.error(f"Claude response missing content (attempt {attempt}/{max_retries})")
                     else:
-                        logger.error(f"Claude response missing message attribute (attempt {attempt}/{max_retries})")
+                        logger.error(f"Claude response missing message (attempt {attempt}/{max_retries})")
                 else:
-                    logger.error(f"Claude response missing choices attribute (attempt {attempt}/{max_retries})")
-                    logger.error(f"Raw Claude response: {response}")
+                    # Only log raw response on the last attempt to avoid log bloat
+                    if attempt == max_retries:
+                        logger.error(f"Claude response structure invalid. Raw response: {response}")
+                    else:
+                        logger.error(f"Claude response structure invalid (attempt {attempt}/{max_retries})")
                 
                 # If we get here, the response was not valid. If this was the last attempt, set a default error message
                 if attempt == max_retries:
-                    final_response = "Our synthesis system encountered technical difficulties. We apologize for the inconvenience. Please try again in a few moments."
+                    final_response = "Our synthesis system encountered technical difficulties. Please try again in a few moments."
                 # Otherwise, wait a bit before retrying
                 else:
-                    logger.info(f"Retrying Claude API in 2 seconds...")
+                    logger.info(f"Retrying Claude API (attempt {attempt}/{max_retries})")
                     time.sleep(2)
                     
             except Exception as e:
-                logger.error(f"Error in Claude API call (attempt {attempt}/{max_retries}): {str(e)}")
+                logger.error(f"Claude API error (attempt {attempt}/{max_retries}): {str(e)}")
                 # If this was the last attempt, set a default error message
                 if attempt == max_retries:
-                    final_response = f"Error connecting to our analysis service: {str(e)}. Please try again later."
+                    final_response = f"Error connecting to our analysis service. Please try again later."
                 # Otherwise, wait a bit before retrying
                 else:
-                    logger.info(f"Retrying Claude API in 2 seconds...")
                     time.sleep(2)
         
-        total_time = time.time() - start_time
-        logger.info(f"OpenRouter Claude API: Total processing time: {total_time:.2f} seconds")
-        
-        logger.info("Completed Claude synthesis")
+        logger.info(f"Claude process completed in {time.time() - start_time:.1f}s")
         return final_response
     except Exception as e:
-        logger.error(f"Error in Claude function outside of API call: {str(e)}")
-        return f"An unexpected error occurred: {str(e)}. Please try again later."
+        logger.error(f"Unexpected error in Claude function: {str(e)}")
+        return f"An unexpected error occurred. Please try again later."
 
 # Function to process company documents and generate embeddings
 async def process_company_documents(company_id: str, company_name: str, event_type: str = "all") -> List[Dict]:
@@ -501,17 +498,13 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
 async def download_files_from_s3(file_urls: List[str]) -> List[str]:
     """Download files from AWS S3 storage to temporary location and return local paths"""
     try:
-        logger.info(f"Starting download of {len(file_urls)} files from S3")
-        aws_handler = AWSS3StorageHandler()
+        logger.info(f"Downloading {len(file_urls)} files from source URLs")
         temp_dir = tempfile.mkdtemp()
-        logger.info(f"Created temporary directory at {temp_dir}")
         local_files = []
         
         # Download files using a synchronous approach with direct HTTP requests
         for i, file_url in enumerate(file_urls):
             try:
-                logger.info(f"Processing URL {i+1}/{len(file_urls)}: {file_url}")
-                
                 # Extract the filename from the URL for local storage
                 from urllib.parse import urlparse, unquote
                 parsed_url = urlparse(file_url)
@@ -541,27 +534,24 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
                             
                             if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                                 local_files.append(local_path)
-                                logger.info(f"Successfully downloaded file to {local_path}, size: {os.path.getsize(local_path)} bytes")
+                                logger.debug(f"Downloaded file to {local_path} ({os.path.getsize(local_path)} bytes)")
                             else:
                                 logger.error(f"File downloaded but appears empty: {local_path}")
                         else:
-                            logger.error(f"Failed to download file, HTTP status: {response.status}")
+                            logger.error(f"HTTP error {response.status} for file: {file_url}")
             except Exception as e:
-                logger.error(f"Error downloading file from {file_url}: {str(e)}")
+                logger.error(f"Error downloading {file_url}: {str(e)}")
                 
-        logger.info(f"Download complete. Successfully downloaded {len(local_files)}/{len(file_urls)} files")
+        logger.info(f"Downloaded {len(local_files)}/{len(file_urls)} files successfully")
         return local_files
     except Exception as e:
-        logger.error(f"Error in download_files_from_s3: {str(e)}")
+        logger.error(f"Error in download process: {str(e)}")
         return []
 
 # Function to analyze documents with Gemini
 async def analyze_documents_with_gemini(company_name: str, query: str, processed_files: List[Dict], conversation_context=None):
     """Analyze company documents using Gemini AI via OpenRouter"""
-    logger.info(f"Analyzing documents for {company_name} with OpenRouter Gemini")
-    logger.info(f"Number of processed files to analyze: {len(processed_files)}")
-    for i, doc in enumerate(processed_files):
-        logger.info(f"Document {i+1}: {doc.get('type', 'unknown')} - {doc.get('filename', 'unnamed')}")
+    logger.info(f"Analyzing documents for {company_name} with Gemini (files: {len(processed_files)})")
     
     client = initialize_openrouter()
     if not client:
@@ -578,14 +568,11 @@ async def analyze_documents_with_gemini(company_name: str, query: str, processed
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
         # Download files from storage
-        logger.info(f"Preparing to download {len(processed_files)} files from S3 for Gemini analysis")
         file_urls = [doc['url'] for doc in processed_files if 'url' in doc]
-        logger.info(f"Extracted {len(file_urls)} URLs for download")
         local_files = await download_files_from_s3(file_urls)
-        logger.info(f"Successfully downloaded {len(local_files)} files from S3")
         
         if not local_files:
-            logger.warning("No files were successfully downloaded for Gemini analysis")
+            logger.warning("No files were successfully downloaded for analysis")
             # Fallback to text-only if files couldn't be downloaded
             documents_text = "No document contents available."
             
@@ -610,17 +597,13 @@ Here are the documents:
             contents = []
             
             # Process files
-            logger.info(f"Processing {len(local_files)} document files for Gemini")
             for file_path in local_files:
                 try:
-                    logger.info(f"Processing file: {file_path}")
                     # Open the file for binary reading
                     with open(file_path, 'rb') as f:
                         file_data = f.read()
-                        logger.info(f"Successfully read {len(file_data)} bytes from {file_path}")
                         
                     # Add file as a base64-encoded part for message content
-                    import base64
                     base64_data = base64.b64encode(file_data).decode("utf-8")
                     contents.append({
                         "type": "image_url",
@@ -628,41 +611,36 @@ Here are the documents:
                             "url": f"data:application/pdf;base64,{base64_data}"
                         }
                     })
-                    logger.info(f"Successfully encoded {file_path} as base64 for Gemini")
                 except Exception as e:
-                    logger.error(f"Error processing file for Gemini: {str(e)}")
+                    logger.error(f"Error processing file: {str(e)}")
             
             # Add text content as the last part of the message
             contents.append({
                 "type": "text",
                 "text": f"You are a financial analyst assistant specialized in analyzing company financial documents. Task: Please analyze the attached documents for {company_name} and answer the following query: {query}\n\nBase your analysis EXCLUSIVELY on the attached documents. If the information isn't in the documents, state that clearly.\n\n{conversation_history}"
             })
-            logger.info(f"Added text prompt to message with {len(contents)-1} attached documents")
             
             # Create message structure
             messages = [{"role": "user", "content": contents}]
         
         # Call Gemini API via OpenRouter
-        logger.info("OpenRouter Gemini API: Sending request")
+        logger.info("Calling Gemini API")
         api_start_time = time.time()
         
         response = client.chat.completions.create(
             model="google/gemini-2.0-flash-001",  # Using newer model via OpenRouter
             messages=messages,
-            temperature=0.2,  # Match original
-            max_tokens=4000    # Match original
+            temperature=0.2,
+            max_tokens=4000
         )
-        
-        api_time = time.time() - api_start_time
-        logger.info(f"OpenRouter Gemini API: Received response in {api_time:.2f} seconds")
         
         # Extract the text content from the response
         final_response = response.choices[0].message.content
-        logger.info(f"Gemini analysis complete, received {len(final_response)} characters")
+        logger.info(f"Gemini analysis completed in {time.time() - api_start_time:.1f}s")
         
         return final_response
     except Exception as e:
-        logger.error(f"Error using OpenRouter Gemini API: {str(e)}")
+        logger.error(f"Error using Gemini API: {str(e)}")
         
         error_details = str(e)
         if "rate limit" in error_details.lower() or "429" in error_details:
