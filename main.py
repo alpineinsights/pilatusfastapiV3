@@ -264,53 +264,66 @@ PERPLEXITY OUTPUT (Based on web search):
             {"role": "user", "content": prompt}
         ]
         
-        # Call Claude API via OpenRouter
-        logger.info("OpenRouter Claude API: Sending request")
-        api_start_time = time.time()
-        
-        response = client.chat.completions.create(
-            model="anthropic/claude-3.7-sonnet",
-            messages=messages,
-            temperature=0.2,  # Match original
-            max_tokens=4000    # Match original
-        )
-        
-        api_time = time.time() - api_start_time
-        logger.info(f"OpenRouter Claude API: Received response in {api_time:.2f} seconds")
-        
-        # Check if response has the expected structure before accessing properties
-        if hasattr(response, 'choices') and response.choices and len(response.choices) > 0:
-            if hasattr(response.choices[0], 'message') and response.choices[0].message:
-                if hasattr(response.choices[0].message, 'content') and response.choices[0].message.content:
-                    final_response = response.choices[0].message.content
-                    logger.info(f"Successfully extracted Claude response, length: {len(final_response)} characters")
+        # Try up to 3 times to get a valid response from Claude
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Call Claude API via OpenRouter
+                logger.info(f"OpenRouter Claude API: Sending request (attempt {attempt}/{max_retries})")
+                api_start_time = time.time()
+                
+                response = client.chat.completions.create(
+                    model="anthropic/claude-3.7-sonnet",
+                    messages=messages,
+                    temperature=0.2,
+                    max_tokens=4000
+                )
+                
+                api_time = time.time() - api_start_time
+                logger.info(f"OpenRouter Claude API: Received response in {api_time:.2f} seconds")
+                
+                # Check if response has the expected structure
+                if hasattr(response, 'choices') and response.choices and len(response.choices) > 0:
+                    if hasattr(response.choices[0], 'message') and response.choices[0].message:
+                        if hasattr(response.choices[0].message, 'content') and response.choices[0].message.content:
+                            final_response = response.choices[0].message.content
+                            logger.info(f"Successfully extracted Claude response, length: {len(final_response)} characters")
+                            # Success! Break out of retry loop
+                            break
+                        else:
+                            logger.error(f"Claude response missing content attribute (attempt {attempt}/{max_retries})")
+                    else:
+                        logger.error(f"Claude response missing message attribute (attempt {attempt}/{max_retries})")
                 else:
-                    logger.error("Claude response missing content attribute")
-                    final_response = "Error: Received empty content from Claude API. Using the following information from other sources:\n\n" + perplexity_output
-            else:
-                logger.error("Claude response missing message attribute")
-                final_response = "Error: Received unexpected response structure from Claude API. Using the following information from other sources:\n\n" + perplexity_output
-        else:
-            logger.error("Claude response missing choices attribute or empty choices")
-            # Log the raw response for debugging
-            logger.error(f"Raw Claude response: {response}")
-            # Return Perplexity output as a fallback
-            final_response = "Due to a technical issue with our analysis system, we're showing the raw search results regarding your query about " + company_name + ":\n\n" + perplexity_output
-            
+                    logger.error(f"Claude response missing choices attribute (attempt {attempt}/{max_retries})")
+                    logger.error(f"Raw Claude response: {response}")
+                
+                # If we get here, the response was not valid. If this was the last attempt, set a default error message
+                if attempt == max_retries:
+                    final_response = "Our synthesis system encountered technical difficulties. We apologize for the inconvenience. Please try again in a few moments."
+                # Otherwise, wait a bit before retrying
+                else:
+                    logger.info(f"Retrying Claude API in 2 seconds...")
+                    time.sleep(2)
+                    
+            except Exception as e:
+                logger.error(f"Error in Claude API call (attempt {attempt}/{max_retries}): {str(e)}")
+                # If this was the last attempt, set a default error message
+                if attempt == max_retries:
+                    final_response = f"Error connecting to our analysis service: {str(e)}. Please try again later."
+                # Otherwise, wait a bit before retrying
+                else:
+                    logger.info(f"Retrying Claude API in 2 seconds...")
+                    time.sleep(2)
+        
         total_time = time.time() - start_time
         logger.info(f"OpenRouter Claude API: Total processing time: {total_time:.2f} seconds")
         
         logger.info("Completed Claude synthesis")
         return final_response
     except Exception as e:
-        logger.error(f"Error using OpenRouter Claude API: {str(e)}")
-        
-        error_details = str(e)
-        if "rate limit" in error_details.lower() or "429" in error_details:
-            return "Error: Rate limit exceeded. Please try again in a moment."
-        
-        # Return Perplexity output as a fallback when Claude fails
-        return f"Error connecting to our analysis service. Using raw search results instead:\n\n{perplexity_output}"
+        logger.error(f"Error in Claude function outside of API call: {str(e)}")
+        return f"An unexpected error occurred: {str(e)}. Please try again later."
 
 # Function to process company documents and generate embeddings
 async def process_company_documents(company_id: str, company_name: str, event_type: str = "all") -> List[Dict]:
