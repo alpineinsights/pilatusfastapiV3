@@ -14,6 +14,7 @@ from utils import QuartrAPI, AWSS3StorageHandler, TranscriptProcessor
 from supabase_client import get_quartrid_by_name
 from logger import logger
 from urllib.parse import urlparse  # For parsing citation URLs
+import tempfile
 
 # Load environment variables
 load_dotenv()
@@ -453,10 +454,71 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
         logger.error(f"Error in process_company_documents: {str(e)}")
         return []
 
+# Function to download files from S3 to local storage
+async def download_files_from_s3(file_urls: List[str]) -> List[str]:
+    """Download files from AWS S3 storage to temporary location and return local paths"""
+    try:
+        logger.info(f"Starting download of {len(file_urls)} files from S3")
+        aws_handler = AWSS3StorageHandler()
+        temp_dir = tempfile.mkdtemp()
+        logger.info(f"Created temporary directory at {temp_dir}")
+        local_files = []
+        
+        # Create the asyncio event loop if not already running
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            logger.info("Created new asyncio event loop for downloads")
+        
+        # Download files
+        for i, file_url in enumerate(file_urls):
+            try:
+                logger.info(f"Processing URL {i+1}/{len(file_urls)}: {file_url}")
+                # Extract the S3 key from the URL
+                parsed_url = urlparse(file_url)
+                # Get the path portion of the URL
+                path = parsed_url.path
+                
+                # Extract the key part (remove leading slash and bucket name if present)
+                path_parts = path.split('/')
+                if len(path_parts) > 2:  # Format: /bucket-name/key
+                    s3_key = '/'.join(path_parts[2:])
+                else:  # Format: /key or key
+                    s3_key = path.lstrip('/')
+                
+                logger.info(f"Extracted S3 key: {s3_key}")
+                safe_filename = s3_key.replace('/', '-')
+                local_path = os.path.join(temp_dir, safe_filename)
+                
+                logger.info(f"Downloading {s3_key} from AWS S3 storage to {local_path}")
+                success = loop.run_until_complete(aws_handler.download_file(s3_key, local_path))
+                
+                if success:
+                    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                        local_files.append(local_path)
+                        logger.info(f"Successfully downloaded {s3_key} to {local_path}, size: {os.path.getsize(local_path)} bytes")
+                    else:
+                        logger.error(f"File downloaded but appears empty or missing: {local_path}")
+                else:
+                    logger.error(f"Failed to download {s3_key}")
+            except Exception as e:
+                logger.error(f"Error downloading file from {file_url}: {str(e)}")
+                
+        logger.info(f"Download complete. Successfully downloaded {len(local_files)}/{len(file_urls)} files")
+        return local_files
+    except Exception as e:
+        logger.error(f"Error in download_files_from_s3: {str(e)}")
+        return []
+
 # Function to analyze documents with Gemini
 async def analyze_documents_with_gemini(company_name: str, query: str, processed_files: List[Dict], conversation_context=None):
     """Analyze company documents using Gemini AI via OpenRouter"""
     logger.info(f"Analyzing documents for {company_name} with OpenRouter Gemini")
+    logger.info(f"Number of processed files to analyze: {len(processed_files)}")
+    for i, doc in enumerate(processed_files):
+        logger.info(f"Document {i+1}: {doc.get('type', 'unknown')} - {doc.get('filename', 'unnamed')}")
     
     client = initialize_openrouter()
     if not client:
@@ -473,8 +535,11 @@ async def analyze_documents_with_gemini(company_name: str, query: str, processed
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
         # Download files from storage
+        logger.info(f"Preparing to download {len(processed_files)} files from S3 for Gemini analysis")
         file_urls = [doc['url'] for doc in processed_files if 'url' in doc]
+        logger.info(f"Extracted {len(file_urls)} URLs for download")
         local_files = await download_files_from_s3(file_urls)
+        logger.info(f"Successfully downloaded {len(local_files)} files from S3")
         
         if not local_files:
             logger.warning("No files were successfully downloaded for Gemini analysis")
@@ -505,9 +570,11 @@ Here are the documents:
             logger.info(f"Processing {len(local_files)} document files for Gemini")
             for file_path in local_files:
                 try:
+                    logger.info(f"Processing file: {file_path}")
                     # Open the file for binary reading
                     with open(file_path, 'rb') as f:
                         file_data = f.read()
+                        logger.info(f"Successfully read {len(file_data)} bytes from {file_path}")
                         
                     # Add file as a base64-encoded part for message content
                     import base64
@@ -518,6 +585,7 @@ Here are the documents:
                             "url": f"data:application/pdf;base64,{base64_data}"
                         }
                     })
+                    logger.info(f"Successfully encoded {file_path} as base64 for Gemini")
                 except Exception as e:
                     logger.error(f"Error processing file for Gemini: {str(e)}")
             
@@ -526,6 +594,7 @@ Here are the documents:
                 "type": "text",
                 "text": f"You are a financial analyst assistant specialized in analyzing company financial documents. Task: Please analyze the attached documents for {company_name} and answer the following query: {query}\n\nBase your analysis EXCLUSIVELY on the attached documents. If the information isn't in the documents, state that clearly.\n\n{conversation_history}"
             })
+            logger.info(f"Added text prompt to message with {len(contents)-1} attached documents")
             
             # Create message structure
             messages = [{"role": "user", "content": contents}]
@@ -546,6 +615,7 @@ Here are the documents:
         
         # Extract the text content from the response
         final_response = response.choices[0].message.content
+        logger.info(f"Gemini analysis complete, received {len(final_response)} characters")
         
         return final_response
     except Exception as e:
@@ -575,25 +645,35 @@ async def get_financial_insights(request: QueryRequest):
         conversation_context = request.conversation_context or []
         
         # Start Perplexity query immediately (parallel processing)
+        logger.info("Starting Perplexity query in parallel")
         perplexity_task = asyncio.create_task(
             query_perplexity(request.query, request.company_name, conversation_context)
         )
         
         # Process company documents and analyze with Gemini
+        logger.info("Starting document processing")
         processed_files = await process_company_documents(company_id, request.company_name)
+        logger.info(f"Successfully processed {len(processed_files)} documents, now analyzing with Gemini")
+        
         gemini_output = await analyze_documents_with_gemini(
             request.company_name, request.query, processed_files, conversation_context
         )
+        logger.info("Completed Gemini document analysis")
         
         # Wait for Perplexity results
+        logger.info("Waiting for Perplexity results to complete")
         perplexity_output, citations = await perplexity_task
+        logger.info(f"Received Perplexity results with {len(citations)} citations")
         
         # Generate final answer with Claude
+        logger.info("Starting Claude synthesis")
         claude_response = query_claude(
             request.query, request.company_name, gemini_output, perplexity_output, conversation_context
         )
+        logger.info("Completed Claude synthesis")
         
         # Format sources section
+        logger.info("Formatting response with sources")
         sources_section = "\n\n### Sources\n"
         
         # Prepare structured sources for the response
