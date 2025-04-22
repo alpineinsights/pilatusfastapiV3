@@ -55,13 +55,19 @@ def initialize_openrouter():
         return None
     
     try:
+        # Add OpenRouter-specific headers
+        headers = {
+            "HTTP-Referer": "https://alpineinsights.ai",  # Your application's URL
+            "X-Title": "Alpine Insights Financial Analysis"  # Your application's name
+        }
+        
         # Initialize the OpenAI client with OpenRouter base URL and API key
-        # Relying on the library to set the correct Authorization header
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY, 
+            api_key=OPENROUTER_API_KEY,
+            default_headers=headers
         )
-        logger.info("OpenAI client initialized for OpenRouter using api_key parameter.")
+        logger.info("OpenAI client initialized for OpenRouter with required headers.")
         return client
     except Exception as e:
         logger.error(f"Error initializing OpenRouter client: {str(e)}")

@@ -92,10 +92,17 @@ def initialize_openrouter():
         return None
     
     try:
+        # Add OpenRouter-specific headers
+        headers = {
+            "HTTP-Referer": "https://alpineinsights.ai",  # Your application's URL
+            "X-Title": "Alpine Insights Financial Analysis"  # Your application's name
+        }
+        
         # Initialize the OpenAI client with OpenRouter base URL
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY,
+            default_headers=headers
         )
         
         return client
