@@ -275,11 +275,7 @@ def query_claude(query: str, company_name: str, gemini_output: str, perplexity_o
             model="anthropic/claude-3.7-sonnet",
             messages=messages,
             temperature=0.1,
-            max_tokens=4000,
-            extra_headers={
-                "HTTP-Referer": "https://alpineinsights.ai",
-                "X-Title": "Alpine Insights Financial Analysis"
-            }
+            max_tokens=4000
         )
         
         api_time = time.time() - api_start_time
@@ -520,7 +516,7 @@ Here are the documents:
             {"role": "user", "content": prompt}
         ]
         
-        # Call Gemini API via OpenRouter, adding the required headers in the request itself
+        # Call Gemini API via OpenRouter
         logger.info("OpenRouter Gemini API: Sending request")
         api_start_time = time.time()
         
@@ -528,11 +524,7 @@ Here are the documents:
             model="google/gemini-2.0-flash-001",
             messages=messages,
             temperature=0.1,
-            max_tokens=4000,
-            extra_headers={
-                "HTTP-Referer": "https://alpineinsights.ai",
-                "X-Title": "Alpine Insights Financial Analysis"
-            }
+            max_tokens=4000
         )
         
         api_time = time.time() - api_start_time

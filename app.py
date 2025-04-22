@@ -231,11 +231,7 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
             model="perplexity/sonar-reasoning-pro",
             messages=messages,
             temperature=0.1,
-            max_tokens=4000,
-            extra_headers={
-                "HTTP-Referer": "https://alpineinsights.ai",
-                "X-Title": "Alpine Insights Financial Analysis"
-            }
+            max_tokens=4000
         )
         
         api_time = time.time() - api_start_time
@@ -335,11 +331,7 @@ def query_claude(query: str, company_name: str, gemini_output: str, perplexity_o
             model="anthropic/claude-3.7-sonnet",
             messages=messages,
             temperature=0.1,
-            max_tokens=4000,
-            extra_headers={
-                "HTTP-Referer": "https://alpineinsights.ai",
-                "X-Title": "Alpine Insights Financial Analysis"
-            }
+            max_tokens=4000
         )
         
         api_time = time.time() - api_start_time
@@ -641,11 +633,7 @@ def query_gemini(query: str, file_paths: List[str], conversation_context=None) -
             model="google/gemini-2.0-flash-001",
             messages=messages,
             max_tokens=7000,
-            temperature=0.1,
-            extra_headers={
-                "HTTP-Referer": "https://alpineinsights.ai",
-                "X-Title": "Alpine Insights Financial Analysis"
-            }
+            temperature=0.1
         )
         
         api_time = time.time() - api_start_time
