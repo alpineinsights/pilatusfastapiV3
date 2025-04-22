@@ -16,6 +16,7 @@ from logger import logger
 from urllib.parse import urlparse, unquote  # For parsing citation URLs
 import tempfile
 import base64
+import unicodedata
 
 # Load environment variables
 load_dotenv()
@@ -510,8 +511,19 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
                 parsed_url = urlparse(file_url)
                 path = unquote(parsed_url.path)
                 
+                # Transliterate accented characters in the filename
+                def transliterate(text):
+                    # Normalize to decomposed form (separate accents from letters)
+                    text = unicodedata.normalize('NFKD', text)
+                    # Remove diacritical marks (accents)
+                    text = ''.join([c for c in text if not unicodedata.combining(c)])
+                    # Replace any remaining non-ASCII characters
+                    text = re.sub(r'[^\x00-\x7F]+', '_', text)
+                    return text
+                
                 # Create safe local filename
-                filename = os.path.basename(path)
+                basename = os.path.basename(path)
+                filename = transliterate(basename)
                 if not filename:
                     filename = f"file_{i}.pdf"
                 

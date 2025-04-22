@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import unicodedata
 from dotenv import load_dotenv
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -57,16 +58,23 @@ class AWSS3StorageHandler:
     def create_filename(self, company_name: str, event_date: str, event_title: str, 
                        doc_type: str, original_filename: str) -> str:
         """Create a standardized filename with company, date, and type"""
+        # Transliterate accented characters to ASCII equivalents
+        def transliterate(text):
+            # Normalize to decomposed form (separate accents from letters)
+            text = unicodedata.normalize('NFKD', text)
+            # Remove diacritical marks (accents)
+            text = ''.join([c for c in text if not unicodedata.combining(c)])
+            # Replace any remaining non-ASCII characters
+            text = re.sub(r'[^\x00-\x7F]+', '_', text)
+            return text
+            
         # Sanitize inputs to be safe for filenames
-        safe_company = company_name.lower()
-        # Replace apostrophes, spaces, hyphens and other problematic characters
-        safe_company = safe_company.replace("'", "").replace(' ', '_').replace('-', '_').replace('&', 'and')
+        safe_company = transliterate(company_name.lower()).replace(' ', '_').replace('-', '_').replace('&', 'and')
         # Remove any other special characters
-        import re
         safe_company = re.sub(r'[^a-z0-9_]', '', safe_company)
         
         safe_date = event_date.replace('-', '')
-        safe_title = event_title.lower().replace(' ', '_')[:30]  # Truncate to avoid very long filenames
+        safe_title = transliterate(event_title.lower()).replace(' ', '_')[:30]  # Truncate to avoid very long filenames
         
         # Get file extension from original filename
         _, ext = os.path.splitext(original_filename)
