@@ -56,8 +56,7 @@ def initialize_openrouter():
     
     try:
         # Initialize the OpenAI client with OpenRouter base URL and API key
-        # Note: We're only setting the api_key and base_url here
-        # The HTTP-Referer and X-Title headers will be passed with each request
+        # Following the official documentation pattern
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY
