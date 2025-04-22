@@ -535,22 +535,33 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
                 
                 # Use a direct HTTP GET request instead of S3 client
                 async with aiohttp.ClientSession() as session:
+                    logger.info(f"Downloading from URL: {file_url}")
                     async with session.get(file_url) as response:
                         if response.status == 200:
                             # Read the content
                             content = await response.read()
+                            content_length = len(content)
                             
+                            if content_length == 0:
+                                logger.error(f"File content is empty: {file_url}")
+                                continue
+                                
                             # Write to local file
                             with open(local_path, 'wb') as f:
                                 f.write(content)
                             
-                            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                                local_files.append(local_path)
-                                logger.debug(f"Downloaded file to {local_path} ({os.path.getsize(local_path)} bytes)")
+                            # Verify file was written properly
+                            if os.path.exists(local_path):
+                                file_size = os.path.getsize(local_path)
+                                if file_size > 0:
+                                    local_files.append(local_path)
+                                    logger.info(f"Downloaded {filename} ({file_size} bytes)")
+                                else:
+                                    logger.error(f"File exists but is empty: {local_path}")
                             else:
-                                logger.error(f"File downloaded but appears empty: {local_path}")
+                                logger.error(f"File failed to download: {local_path}")
                         else:
-                            logger.error(f"HTTP error {response.status} for file: {file_url}")
+                            logger.error(f"HTTP error {response.status} for URL: {file_url}")
             except Exception as e:
                 logger.error(f"Error downloading {file_url}: {str(e)}")
                 
@@ -582,6 +593,14 @@ async def analyze_documents_with_gemini(company_name: str, query: str, processed
         # Download files from storage
         file_urls = [doc['url'] for doc in processed_files if 'url' in doc]
         local_files = await download_files_from_s3(file_urls)
+        
+        # Log file details for debugging
+        total_file_size = 0
+        for file_path in local_files:
+            file_size = os.path.getsize(file_path)
+            total_file_size += file_size
+            logger.info(f"File: {os.path.basename(file_path)}, Size: {file_size} bytes")
+        logger.info(f"Total size of all files: {total_file_size} bytes")
         
         if not local_files:
             logger.warning("No files were successfully downloaded for analysis")
@@ -615,49 +634,103 @@ Here are the documents:
                     with open(file_path, 'rb') as f:
                         file_data = f.read()
                         
+                    # Check file data integrity
+                    if len(file_data) == 0:
+                        logger.error(f"File is empty: {file_path}")
+                        continue
+                        
                     # Add file as a base64-encoded part for message content
                     base64_data = base64.b64encode(file_data).decode("utf-8")
-                    contents.append({
+                    file_content = {
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:application/pdf;base64,{base64_data}"
                         }
-                    })
+                    }
+                    contents.append(file_content)
+                    logger.info(f"Added file to message: {os.path.basename(file_path)}, encoded size: {len(base64_data)} chars")
                 except Exception as e:
-                    logger.error(f"Error processing file: {str(e)}")
+                    logger.error(f"Error processing file {file_path}: {str(e)}")
             
             # Add text content as the last part of the message
-            contents.append({
-                "type": "text",
-                "text": f"You are a financial analyst assistant specialized in analyzing company financial documents. Task: Please analyze the attached documents for {company_name} and answer the following query: {query}\n\nBase your analysis EXCLUSIVELY on the attached documents. If the information isn't in the documents, state that clearly.\n\n{conversation_history}"
-            })
+            text_prompt = f"""You are a financial analyst assistant specialized in analyzing company financial documents. 
+Task: Please analyze the attached documents for {company_name} and answer the following query: {query}
+
+Base your analysis EXCLUSIVELY on the attached documents. If the information isn't in the documents, state that clearly.
+
+{conversation_history}"""
             
-            # Create message structure
+            text_content = {
+                "type": "text",
+                "text": text_prompt
+            }
+            contents.append(text_content)
+            logger.info(f"Added text prompt to message with {len(contents)-1} attached documents")
+            
+            # Ensure we have properly formatted content for OpenRouter/Gemini
+            if len(contents) <= 1:
+                logger.error("No document content was successfully added to the message")
+                return "Error: Failed to process document content for analysis."
+                
+            # Create message structure for OpenRouter/Gemini
             messages = [{"role": "user", "content": contents}]
+            
+            # Log the structure for debugging (without the base64 data which is too long)
+            debug_contents = []
+            for item in contents:
+                if item.get("type") == "image_url":
+                    debug_contents.append({
+                        "type": "image_url",
+                        "image_url": {"url": "data:application/pdf;base64,[BASE64_DATA]"}
+                    })
+                else:
+                    debug_contents.append(item)
+            logger.info(f"Message structure: {debug_contents}")
         
         # Call Gemini API via OpenRouter
         logger.info("Calling Gemini API")
         api_start_time = time.time()
         
-        response = client.chat.completions.create(
-            model="google/gemini-2.0-flash-001",  # Using newer model via OpenRouter
-            messages=messages,
-            temperature=0.2,
-            max_tokens=4000
-        )
-        
-        # Extract the text content from the response
-        final_response = response.choices[0].message.content
-        logger.info(f"Gemini analysis completed in {time.time() - api_start_time:.1f}s")
-        
-        return final_response
+        try:
+            response = client.chat.completions.create(
+                model="google/gemini-2.0-flash-001",
+                messages=messages,
+                temperature=0.2,
+                max_tokens=4000
+            )
+            
+            # Extract the text content from the response
+            if hasattr(response, 'choices') and response.choices and len(response.choices) > 0:
+                if hasattr(response.choices[0], 'message') and response.choices[0].message:
+                    if hasattr(response.choices[0].message, 'content'):
+                        final_response = response.choices[0].message.content
+                        api_time = time.time() - api_start_time
+                        logger.info(f"Gemini analysis completed in {api_time:.1f}s, response length: {len(final_response)} chars")
+                        
+                        # If response is very short and completed quickly, it might be an error
+                        if len(final_response) < 500 and api_time < 5.0:
+                            logger.warning(f"Suspiciously short response ({len(final_response)} chars) and quick processing time ({api_time:.1f}s). Response: {final_response}")
+                        
+                        return final_response
+                    else:
+                        logger.error("Gemini response missing content")
+                else:
+                    logger.error("Gemini response missing message")
+            else:
+                logger.error("Gemini response missing choices")
+                
+            # If we get here, the response parsing failed
+            api_time = time.time() - api_start_time
+            logger.error(f"Failed to extract content from Gemini response after {api_time:.1f}s")
+            return "Error: Failed to extract content from Gemini response."
+            
+        except Exception as api_error:
+            api_time = time.time() - api_start_time
+            logger.error(f"Gemini API error after {api_time:.1f}s: {str(api_error)}")
+            return f"Error calling Gemini API: {str(api_error)}"
+            
     except Exception as e:
-        logger.error(f"Error using Gemini API: {str(e)}")
-        
-        error_details = str(e)
-        if "rate limit" in error_details.lower() or "429" in error_details:
-            return "Error: Rate limit exceeded. Please try again in a moment."
-        
+        logger.error(f"Error in document analysis: {str(e)}")
         return f"Error: {str(e)}"
 
 # Main endpoint for financial insights
