@@ -352,7 +352,7 @@ def query_gemini(query: str, file_paths: List[str], conversation_context=None) -
                 with open(file_path, 'rb') as f:
                     file_data = f.read()
                     
-                # Add file as a base64-encoded image part for message content
+                # Add file as a base64-encoded part for message content
                 import base64
                 base64_data = base64.b64encode(file_data).decode("utf-8")
                 contents.append({

@@ -472,19 +472,17 @@ async def analyze_documents_with_gemini(company_name: str, query: str, processed
                 conversation_history += f"Question: {entry['query']}\n"
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
-        # Prepare documents for analysis
-        documents_text = ""
-        for doc in processed_files:
-            documents_text += f"\n\n--- {doc['type'].upper()}: {doc['title']} ({doc['date']}) ---\n"
-            if 'text' in doc:
-                # For transcripts, we already have the text
-                documents_text += doc['text']
-            else:
-                # For other documents, we just have the URL
-                documents_text += f"Document URL: {doc['url']}\n"
+        # Download files from storage
+        file_urls = [doc['url'] for doc in processed_files if 'url' in doc]
+        local_files = await download_files_from_s3(file_urls)
         
-        # Create prompt for Gemini - USING ORIGINAL PROMPT
-        prompt = f"""You are a financial analyst assistant specialized in analyzing company financial documents. 
+        if not local_files:
+            logger.warning("No files were successfully downloaded for Gemini analysis")
+            # Fallback to text-only if files couldn't be downloaded
+            documents_text = "No document contents available."
+            
+            # Create a text-only prompt as fallback
+            prompt = f"""You are a financial analyst assistant specialized in analyzing company financial documents. 
 
 Task: Please analyze the provided company documents for {company_name} and answer the following query: {query}
 
@@ -494,11 +492,43 @@ Base your analysis EXCLUSIVELY on the documents provided below. If the informati
 Here are the documents:
 {documents_text}
 """
-        
-        # Create message structure
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
+            
+            # Create message structure for text-only fallback
+            messages = [
+                {"role": "user", "content": prompt}
+            ]
+        else:
+            # Prepare contents for messages with file data
+            contents = []
+            
+            # Process files
+            logger.info(f"Processing {len(local_files)} document files for Gemini")
+            for file_path in local_files:
+                try:
+                    # Open the file for binary reading
+                    with open(file_path, 'rb') as f:
+                        file_data = f.read()
+                        
+                    # Add file as a base64-encoded part for message content
+                    import base64
+                    base64_data = base64.b64encode(file_data).decode("utf-8")
+                    contents.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:application/pdf;base64,{base64_data}"
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"Error processing file for Gemini: {str(e)}")
+            
+            # Add text content as the last part of the message
+            contents.append({
+                "type": "text",
+                "text": f"You are a financial analyst assistant specialized in analyzing company financial documents. Task: Please analyze the attached documents for {company_name} and answer the following query: {query}\n\nBase your analysis EXCLUSIVELY on the attached documents. If the information isn't in the documents, state that clearly.\n\n{conversation_history}"
+            })
+            
+            # Create message structure
+            messages = [{"role": "user", "content": contents}]
         
         # Call Gemini API via OpenRouter
         logger.info("OpenRouter Gemini API: Sending request")
