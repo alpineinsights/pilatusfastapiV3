@@ -58,7 +58,13 @@ class AWSS3StorageHandler:
                        doc_type: str, original_filename: str) -> str:
         """Create a standardized filename with company, date, and type"""
         # Sanitize inputs to be safe for filenames
-        safe_company = company_name.lower().replace(' ', '_').replace('-', '_')
+        safe_company = company_name.lower()
+        # Replace apostrophes, spaces, hyphens and other problematic characters
+        safe_company = safe_company.replace("'", "").replace(' ', '_').replace('-', '_').replace('&', 'and')
+        # Remove any other special characters
+        import re
+        safe_company = re.sub(r'[^a-z0-9_]', '', safe_company)
+        
         safe_date = event_date.replace('-', '')
         safe_title = event_title.lower().replace(' ', '_')[:30]  # Truncate to avoid very long filenames
         

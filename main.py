@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from utils import QuartrAPI, AWSS3StorageHandler, TranscriptProcessor
 from supabase_client import get_quartrid_by_name
 from logger import logger
-from urllib.parse import urlparse  # For parsing citation URLs
+from urllib.parse import urlparse, unquote  # For parsing citation URLs
 import tempfile
 
 # Load environment variables
@@ -470,8 +470,8 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
                 logger.info(f"Processing URL {i+1}/{len(file_urls)}: {file_url}")
                 # Extract the S3 key from the URL
                 parsed_url = urlparse(file_url)
-                # Get the path portion of the URL
-                path = parsed_url.path
+                # Get the path portion of the URL and decode any URL-encoded characters
+                path = unquote(parsed_url.path)
                 
                 # Extract the key part (remove leading slash and bucket name if present)
                 path_parts = path.split('/')
@@ -481,7 +481,8 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
                     s3_key = path.lstrip('/')
                 
                 logger.info(f"Extracted S3 key: {s3_key}")
-                safe_filename = s3_key.replace('/', '-')
+                # Create a safe filename for local storage
+                safe_filename = re.sub(r'[^a-zA-Z0-9_.-]', '-', s3_key.replace('/', '-'))
                 local_path = os.path.join(temp_dir, safe_filename)
                 
                 logger.info(f"Downloading {s3_key} from AWS S3 storage to {local_path}")
