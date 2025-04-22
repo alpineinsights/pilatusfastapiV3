@@ -55,12 +55,18 @@ def initialize_openrouter():
         return None
     
     try:
-        # Initialize the OpenAI client with OpenRouter base URL
+        # Explicitly set the Authorization header
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}"
+        }
+        
+        # Initialize the OpenAI client with OpenRouter base URL and explicit header
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY,
+            api_key=OPENROUTER_API_KEY,  # Keep this for potential future library behavior changes
+            default_headers=headers,
         )
-        
+        logger.info("OpenAI client initialized with explicit Authorization header for OpenRouter.")
         return client
     except Exception as e:
         logger.error(f"Error initializing OpenRouter client: {str(e)}")
