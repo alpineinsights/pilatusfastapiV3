@@ -278,8 +278,24 @@ PERPLEXITY OUTPUT (Based on web search):
         api_time = time.time() - api_start_time
         logger.info(f"OpenRouter Claude API: Received response in {api_time:.2f} seconds")
         
-        # Extract the text content from the response
-        final_response = response.choices[0].message.content
+        # Check if response has the expected structure before accessing properties
+        if hasattr(response, 'choices') and response.choices and len(response.choices) > 0:
+            if hasattr(response.choices[0], 'message') and response.choices[0].message:
+                if hasattr(response.choices[0].message, 'content') and response.choices[0].message.content:
+                    final_response = response.choices[0].message.content
+                    logger.info(f"Successfully extracted Claude response, length: {len(final_response)} characters")
+                else:
+                    logger.error("Claude response missing content attribute")
+                    final_response = "Error: Received empty content from Claude API."
+            else:
+                logger.error("Claude response missing message attribute")
+                final_response = "Error: Received unexpected response structure from Claude API."
+        else:
+            logger.error("Claude response missing choices attribute or empty choices")
+            final_response = "Error: Received empty response from Claude API."
+            
+            # Log the raw response for debugging
+            logger.error(f"Raw Claude response: {response}")
         
         total_time = time.time() - start_time
         logger.info(f"OpenRouter Claude API: Total processing time: {total_time:.2f} seconds")
@@ -476,6 +492,13 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
         logger.info(f"Created temporary directory at {temp_dir}")
         local_files = []
         
+        # Create the asyncio event loop if not already running
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
         # Download files
         for i, file_url in enumerate(file_urls):
             try:
@@ -499,15 +522,12 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
                 
                 logger.info(f"Downloading {s3_key} from AWS S3 storage to {local_path}")
                 
-                # Direct async call - ensuring we properly await it
-                success = await aws_handler.download_file(s3_key, local_path)
+                # Use run_until_complete to execute the async download function
+                success = loop.run_until_complete(aws_handler.download_file(s3_key, local_path))
                 
                 if success:
-                    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                        local_files.append(local_path)
-                        logger.info(f"Successfully downloaded {s3_key} to {local_path}, size: {os.path.getsize(local_path)} bytes")
-                    else:
-                        logger.error(f"File downloaded but appears empty or missing: {local_path}")
+                    local_files.append(local_path)
+                    logger.info(f"Successfully downloaded {s3_key} to {local_path}")
                 else:
                     logger.error(f"Failed to download {s3_key}")
             except Exception as e:
