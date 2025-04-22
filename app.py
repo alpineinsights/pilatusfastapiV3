@@ -27,6 +27,7 @@ from datetime import datetime
 from logging_config import setup_logging
 from logger import logger  # Import the configured logger
 from urllib.parse import urlparse
+import base64
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -346,7 +347,6 @@ def query_gemini(query: str, file_paths: List[str], conversation_context=None) -
                     file_data = f.read()
                     
                 # Add file as a base64-encoded part for message content
-                import base64
                 base64_data = base64.b64encode(file_data).decode("utf-8")
                 contents.append({
                     "type": "image_url",
@@ -394,3 +394,37 @@ def query_gemini(query: str, file_paths: List[str], conversation_context=None) -
     except Exception as e:
         logger.error(f"Error querying OpenRouter Gemini: {str(e)}")
         return f"An error occurred while processing your query: {str(e)}"
+
+async def analyze_documents_with_gemini(company_name: str, query: str, processed_files: List[Dict], conversation_context=None):
+    # ... existing setup ...
+    
+    if local_files:
+        # Prepare contents for messages with file data using proper OpenRouter format
+        parts = []
+        
+        # Process files - using OpenRouter's expected format for Gemini
+        for file_path in local_files:
+            try:
+                with open(file_path, 'rb') as f:
+                    file_data = f.read()
+                    
+                # Format PDF data as base64 with proper mime type and format
+                base64_data = base64.b64encode(file_data).decode("utf-8")
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:application/pdf;base64,{base64_data}"
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Error processing file for Gemini: {str(e)}")
+        
+        # Add text prompt as the final part with proper formatting
+        prompt_text = f"You are a financial analyst assistant specialized in analyzing company financial documents. Task: Please analyze the attached documents for {company_name} and answer the following query: {query}\n\nBase your analysis EXCLUSIVELY on the attached documents. If the information isn't in the documents, state that clearly.\n\n{conversation_history}"
+        parts.append({
+            "type": "text",
+            "text": prompt_text
+        })
+        
+        # Create message structure for OpenRouter/Gemini
+        messages = [{"role": "user", "content": parts}]
