@@ -286,20 +286,21 @@ PERPLEXITY OUTPUT (Based on web search):
                     logger.info(f"Successfully extracted Claude response, length: {len(final_response)} characters")
                 else:
                     logger.error("Claude response missing content attribute")
-                    final_response = "Error: Received empty content from Claude API."
+                    final_response = "Error: Received empty content from Claude API. Using the following information from other sources:\n\n" + perplexity_output
             else:
                 logger.error("Claude response missing message attribute")
-                final_response = "Error: Received unexpected response structure from Claude API."
+                final_response = "Error: Received unexpected response structure from Claude API. Using the following information from other sources:\n\n" + perplexity_output
         else:
             logger.error("Claude response missing choices attribute or empty choices")
-            final_response = "Error: Received empty response from Claude API."
-            
             # Log the raw response for debugging
             logger.error(f"Raw Claude response: {response}")
-        
+            # Return Perplexity output as a fallback
+            final_response = "Due to a technical issue with our analysis system, we're showing the raw search results regarding your query about " + company_name + ":\n\n" + perplexity_output
+            
         total_time = time.time() - start_time
         logger.info(f"OpenRouter Claude API: Total processing time: {total_time:.2f} seconds")
         
+        logger.info("Completed Claude synthesis")
         return final_response
     except Exception as e:
         logger.error(f"Error using OpenRouter Claude API: {str(e)}")
@@ -308,7 +309,8 @@ PERPLEXITY OUTPUT (Based on web search):
         if "rate limit" in error_details.lower() or "429" in error_details:
             return "Error: Rate limit exceeded. Please try again in a moment."
         
-        return f"Error: {str(e)}"
+        # Return Perplexity output as a fallback when Claude fails
+        return f"Error connecting to our analysis service. Using raw search results instead:\n\n{perplexity_output}"
 
 # Function to process company documents and generate embeddings
 async def process_company_documents(company_id: str, company_name: str, event_type: str = "all") -> List[Dict]:
@@ -492,44 +494,45 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
         logger.info(f"Created temporary directory at {temp_dir}")
         local_files = []
         
-        # Create the asyncio event loop if not already running
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # Download files
+        # Download files using a synchronous approach with direct HTTP requests
         for i, file_url in enumerate(file_urls):
             try:
                 logger.info(f"Processing URL {i+1}/{len(file_urls)}: {file_url}")
-                # Extract the S3 key from the URL
+                
+                # Extract the filename from the URL for local storage
+                from urllib.parse import urlparse, unquote
                 parsed_url = urlparse(file_url)
-                # Get the path portion of the URL and decode any URL-encoded characters
                 path = unquote(parsed_url.path)
                 
-                # Extract the key part (remove leading slash and bucket name if present)
-                path_parts = path.split('/')
-                if len(path_parts) > 2:  # Format: /bucket-name/key
-                    s3_key = '/'.join(path_parts[2:])
-                else:  # Format: /key or key
-                    s3_key = path.lstrip('/')
+                # Create safe local filename
+                filename = os.path.basename(path)
+                if not filename:
+                    filename = f"file_{i}.pdf"
                 
-                logger.info(f"Extracted S3 key: {s3_key}")
-                # Create a safe filename for local storage
-                safe_filename = re.sub(r'[^a-zA-Z0-9_.-]', '-', s3_key.replace('/', '-'))
-                local_path = os.path.join(temp_dir, safe_filename)
+                # Create a safe local path
+                local_path = os.path.join(temp_dir, filename)
                 
-                logger.info(f"Downloading {s3_key} from AWS S3 storage to {local_path}")
+                # Create directories if needed
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
                 
-                # Use run_until_complete to execute the async download function
-                success = loop.run_until_complete(aws_handler.download_file(s3_key, local_path))
-                
-                if success:
-                    local_files.append(local_path)
-                    logger.info(f"Successfully downloaded {s3_key} to {local_path}")
-                else:
-                    logger.error(f"Failed to download {s3_key}")
+                # Use a direct HTTP GET request instead of S3 client
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(file_url) as response:
+                        if response.status == 200:
+                            # Read the content
+                            content = await response.read()
+                            
+                            # Write to local file
+                            with open(local_path, 'wb') as f:
+                                f.write(content)
+                            
+                            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                                local_files.append(local_path)
+                                logger.info(f"Successfully downloaded file to {local_path}, size: {os.path.getsize(local_path)} bytes")
+                            else:
+                                logger.error(f"File downloaded but appears empty: {local_path}")
+                        else:
+                            logger.error(f"Failed to download file, HTTP status: {response.status}")
             except Exception as e:
                 logger.error(f"Error downloading file from {file_url}: {str(e)}")
                 
