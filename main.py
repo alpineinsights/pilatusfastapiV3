@@ -45,7 +45,7 @@ conversation_contexts = {}
 
 # Initialize OpenRouter client for all models
 def initialize_openrouter():
-    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
     
     # Log the loaded API key (or lack thereof)
     if OPENROUTER_API_KEY:
@@ -56,7 +56,6 @@ def initialize_openrouter():
     
     try:
         # Initialize the OpenAI client with OpenRouter base URL and API key
-        # Following the official documentation pattern
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY
@@ -67,6 +66,7 @@ def initialize_openrouter():
         logger.error(f"Error initializing OpenRouter client: {str(e)}")
         return None
 
+# Remove redundant initializer functions
 # Initialize Gemini model - keeping for backward compatibility
 def initialize_gemini():
     return initialize_openrouter()
@@ -122,16 +122,7 @@ def extract_valid_json(response: Dict[str, Any]) -> Dict[str, Any]:
 
 # Function to call Perplexity API
 async def query_perplexity(query: str, company_name: str, conversation_context=None) -> Tuple[str, List[Dict]]:
-    """Call Perplexity API with a financial analyst prompt for the specified company using OpenRouter
-    
-    Args:
-        query: The user's query
-        company_name: The name of the company
-        conversation_context: Passed explicitly to avoid thread issues with st.session_state
-    
-    Returns:
-        Tuple[str, List[Dict]]: The response content and a list of citation objects
-    """
+    """Call Perplexity API with a financial analyst prompt for the specified company using OpenRouter"""
     
     client = initialize_openrouter()
     if not client:
@@ -150,20 +141,16 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
                 conversation_history += f"Question: {entry['query']}\n"
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
-        # Create system prompt for financial analysis instructions only
-        system_prompt = f"""
-        You are a helpful financial analyst assistant. The user is researching information about {company_name}.
+        # Create system prompt for financial analysis instructions only - USING ORIGINAL PROMPT
+        system_prompt = "You are a senior financial analyst on listed equities. Give comprehensive and detailed responses. Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation."
         
-        Make your answers as informative and well-structured as possible, organizing facts and figures in a clear and helpful way.
-        Always cite your sources with URL references when possible. 
-        Use only reliable sources, focusing on financial news, company reports, and expert analysis.
-        {conversation_history}
-        """
+        # Create user message with research context and the original query - USING ORIGINAL FORMAT
+        user_message = f"I am doing research on this listed company: {company_name}\n\n{query}\n\n{conversation_history}"
         
         # Create message structure
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query}
+            {"role": "user", "content": user_message}
         ]
         
         # Call Perplexity API via OpenRouter
@@ -173,15 +160,15 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
         response = client.chat.completions.create(
             model="perplexity/sonar-reasoning-pro",
             messages=messages,
-            temperature=0.1,
-            max_tokens=4000
+            temperature=0.2,  # Match original
+            max_tokens=2000   # Match original
         )
         
         api_time = time.time() - api_start_time
         logger.info(f"OpenRouter Perplexity API: Received response in {api_time:.2f} seconds")
         
         content = response.choices[0].message.content
-        
+                
         # Extract citations if present
         citations = []
         
@@ -198,7 +185,7 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
         
         total_time = time.time() - start_time
         logger.info(f"OpenRouter Perplexity API: Total processing time: {total_time:.2f} seconds")
-        
+                        
         return content, citations
     except Exception as e:
         logger.error(f"Error using OpenRouter Perplexity API: {str(e)}")
@@ -225,45 +212,43 @@ def query_claude(query: str, company_name: str, gemini_output: str, perplexity_o
         # Build conversation history for context (safely)
         conversation_history = ""
         if conversation_context:
-            conversation_history = "\n\nPrevious conversation:\n"
+            conversation_history = "\n\nPREVIOUS CONVERSATION CONTEXT:\n"
             for entry in conversation_context:
                 conversation_history += f"Question: {entry['query']}\n"
                 conversation_history += f"Answer: {entry['summary']}\n\n"
-                
-        # Create system prompt
-        system_prompt = f"""
-        You are a senior financial analyst assistant. The user is asking about {company_name}.
         
-        You have been provided with analysis from two sources:
-        1. A document analysis that analyzed company-specific documents (financial reports, transcripts)
-        2. A web search that searched for publicly available information
-        
-        Base your response primarily on this input data. If the sources contradict each other,
-        favor the document analysis for company-specific facts.
-        
-        Make your answers informative and well-structured, organizing facts and figures in a clear
-        and helpful way. Focus on factual information and provide helpful context about financial metrics.
-        
-        Present a balanced analysis without making specific investment recommendations.
-        """
-        
-        # Format the input to the Claude API
-        content = f"""
-        USER QUERY: {query}
-        
-        GEMINI OUTPUT (Based on company documents):
-        {gemini_output}
-        
-        PERPLEXITY OUTPUT (Web search):
-        {perplexity_output}
-        
-        {conversation_history}
-        """
+        # Create prompt for Claude - USING ORIGINAL PROMPT
+        prompt = f"""You are a senior financial analyst on listed equities. Here is a question on {company_name}: {query}. 
+Give a comprehensive and detailed response using ONLY the context provided below. Do not use your general knowledge or the Internet. 
+If you encounter conflicting information between sources, prioritize the most recent source unless there's a specific reason not to (e.g., if the newer source explicitly references and validates the older information).
+If the most recent available data is more than 6 months old, explicitly mention this in your response and caution that more recent developments may not be reflected in your analysis.
+Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation.{conversation_history}
+
+Tone and format:
+- Provide clear, detailed, and accurate information tailored to professional investors.
+- When appropriate, for instance when the response involves a lot of figures, format your response in a table.
+- If there are conflicting views or data points in different sources, acknowledge this and provide a balanced perspective.
+- When appropriate, highlight any potential risks, opportunities, or trends that may not be explicitly stated in the query but are relevant to the analysis.
+- If you don't have sufficient information to answer a query comprehensively, state this clearly and provide the best analysis possible with the available data.
+- Recognize this might be a follow-up question to previous conversation. If so, provide a coherent response that acknowledges the conversation history.
+- Be prepared to explain financial metrics, ratios, or industry-specific terms if requested.
+- Maintain a professional and objective tone throughout your responses.
+
+Remember, your goal is to provide valuable, data-driven insights that can aid professional investors in their decision-making process regarding the selected company, leveraging ONLY the provided context and NEVER using training data from your general knowledge.
+
+Here is the context:
+
+GEMINI OUTPUT (Based on company documents):
+{gemini_output}
+
+PERPLEXITY OUTPUT (Based on web search):
+{perplexity_output}
+"""
         
         # Create message structure
         messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": content}
+            {"role": "system", "content": "You are a senior financial analyst providing detailed analysis for professional investors."},
+            {"role": "user", "content": prompt}
         ]
         
         # Call Claude API via OpenRouter
@@ -273,8 +258,8 @@ def query_claude(query: str, company_name: str, gemini_output: str, perplexity_o
         response = client.chat.completions.create(
             model="anthropic/claude-3.7-sonnet",
             messages=messages,
-            temperature=0.1,
-            max_tokens=4000
+            temperature=0.2,  # Match original
+            max_tokens=4000    # Match original
         )
         
         api_time = time.time() - api_start_time
@@ -498,7 +483,7 @@ async def analyze_documents_with_gemini(company_name: str, query: str, processed
                 # For other documents, we just have the URL
                 documents_text += f"Document URL: {doc['url']}\n"
         
-        # Create prompt for Gemini
+        # Create prompt for Gemini - USING ORIGINAL PROMPT
         prompt = f"""You are a financial analyst assistant specialized in analyzing company financial documents. 
 
 Task: Please analyze the provided company documents for {company_name} and answer the following query: {query}
@@ -509,7 +494,7 @@ Base your analysis EXCLUSIVELY on the documents provided below. If the informati
 Here are the documents:
 {documents_text}
 """
-
+        
         # Create message structure
         messages = [
             {"role": "user", "content": prompt}
@@ -520,10 +505,10 @@ Here are the documents:
         api_start_time = time.time()
         
         response = client.chat.completions.create(
-            model="google/gemini-2.0-flash-001",
+            model="google/gemini-2.0-flash-001",  # Using newer model via OpenRouter
             messages=messages,
-            temperature=0.1,
-            max_tokens=4000
+            temperature=0.2,  # Match original
+            max_tokens=4000    # Match original
         )
         
         api_time = time.time() - api_start_time
