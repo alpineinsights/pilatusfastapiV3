@@ -92,17 +92,12 @@ def initialize_openrouter():
         return None
     
     try:
-        # Add OpenRouter-specific headers
-        headers = {
-            "HTTP-Referer": "https://alpineinsights.ai",  # Your application's URL
-            "X-Title": "Alpine Insights Financial Analysis"  # Your application's name
-        }
-        
         # Initialize the OpenAI client with OpenRouter base URL
+        # Note: We're only setting the api_key and base_url here
+        # The HTTP-Referer and X-Title headers will be passed with each request
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY,
-            default_headers=headers
+            api_key=OPENROUTER_API_KEY
         )
         
         return client
@@ -236,7 +231,11 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
             model="perplexity/sonar-reasoning-pro",
             messages=messages,
             temperature=0.1,
-            max_tokens=4000
+            max_tokens=4000,
+            extra_headers={
+                "HTTP-Referer": "https://alpineinsights.ai",
+                "X-Title": "Alpine Insights Financial Analysis"
+            }
         )
         
         api_time = time.time() - api_start_time
@@ -336,7 +335,11 @@ def query_claude(query: str, company_name: str, gemini_output: str, perplexity_o
             model="anthropic/claude-3.7-sonnet",
             messages=messages,
             temperature=0.1,
-            max_tokens=4000
+            max_tokens=4000,
+            extra_headers={
+                "HTTP-Referer": "https://alpineinsights.ai",
+                "X-Title": "Alpine Insights Financial Analysis"
+            }
         )
         
         api_time = time.time() - api_start_time
@@ -638,7 +641,11 @@ def query_gemini(query: str, file_paths: List[str], conversation_context=None) -
             model="google/gemini-2.0-flash-001",
             messages=messages,
             max_tokens=7000,
-            temperature=0.1
+            temperature=0.1,
+            extra_headers={
+                "HTTP-Referer": "https://alpineinsights.ai",
+                "X-Title": "Alpine Insights Financial Analysis"
+            }
         )
         
         api_time = time.time() - api_start_time
