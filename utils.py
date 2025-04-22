@@ -164,12 +164,14 @@ class AWSS3StorageHandler:
             try:
                 import aioboto3
                 
+                # Create session without setting an event loop
                 session = aioboto3.Session(
                     aws_access_key_id=self.access_key,
                     aws_secret_access_key=self.secret_key,
                     region_name=self.region
                 )
                 
+                # Use the current event loop rather than creating a new one
                 async with session.client('s3') as s3_async:
                     with open(local_path, 'wb') as f:
                         await s3_async.download_fileobj(self.bucket_name, filename, f)
@@ -187,6 +189,21 @@ class AWSS3StorageHandler:
                 logger.warning("aioboto3 not available, falling back to synchronous download")
                 
                 # Download the file from S3
+                with open(local_path, 'wb') as f:
+                    self.s3_client.download_fileobj(self.bucket_name, filename, f)
+                
+                # Verify file was downloaded successfully
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    logger.info(f"Successfully downloaded {filename} to {local_path}")
+                    return True
+                else:
+                    logger.warning(f"Downloaded file exists but is empty: {local_path}")
+                    return False
+            except Exception as inner_e:
+                # If there's any error with aioboto3, log it and fallback to synchronous
+                logger.warning(f"Error using aioboto3, falling back to synchronous download: {str(inner_e)}")
+                
+                # Download the file from S3 using synchronous client
                 with open(local_path, 'wb') as f:
                     self.s3_client.download_fileobj(self.bucket_name, filename, f)
                 

@@ -464,14 +464,6 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
         logger.info(f"Created temporary directory at {temp_dir}")
         local_files = []
         
-        # Create the asyncio event loop if not already running
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            logger.info("Created new asyncio event loop for downloads")
-        
         # Download files
         for i, file_url in enumerate(file_urls):
             try:
@@ -493,7 +485,9 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
                 local_path = os.path.join(temp_dir, safe_filename)
                 
                 logger.info(f"Downloading {s3_key} from AWS S3 storage to {local_path}")
-                success = loop.run_until_complete(aws_handler.download_file(s3_key, local_path))
+                
+                # Direct async call - ensuring we properly await it
+                success = await aws_handler.download_file(s3_key, local_path)
                 
                 if success:
                     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
