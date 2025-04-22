@@ -38,7 +38,7 @@ class AWSS3StorageHandler:
         self.access_key = os.getenv("AWS_ACCESS_KEY_ID", "AKIAW3MEESPGPUDIYMGN")
         self.secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "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")
         self.region = os.getenv("AWS_REGION", "eu-central-2")
-        self.bucket_name = os.getenv("AWS_BUCKET_NAME", "alpineinsights")
+        self.bucket_name = os.getenv("AWS_BUCKET_NAME", "harperai")
         
         try:
             # Configure S3 client with appropriate settings
