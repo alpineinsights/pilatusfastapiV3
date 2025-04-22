@@ -170,23 +170,35 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
         
         content = response.choices[0].message.content
                 
-        # Extract citations if present
+        # Try to extract citations from the response (both ways)
         citations = []
         
-        # Check for citations in the content and extract them
-        citation_regex = r'\[(.*?)\]\((https?://[^\s\)]+)\)'
-        matches = re.findall(citation_regex, content)
+        # Method 1: Try to get citations directly from response object if available
+        # Convert response to dict to check if citations field exists
+        response_dict = response.model_dump() if hasattr(response, 'model_dump') else {}
+        direct_citations = response_dict.get('citations', [])
         
-        for i, (title, url) in enumerate(matches):
-            citations.append({
-                "id": i + 1,
-                "title": title.strip(),
-                "url": url.strip()
-            })
+        if direct_citations:
+            logger.info(f"Found {len(direct_citations)} citations directly in the response")
+            citations = direct_citations
+        else:
+            # Method 2: Extract citations from the text using regex (markdown links)
+            logger.info("No direct citations found, extracting from text using regex")
+            citation_regex = r'\[(.*?)\]\((https?://[^\s\)]+)\)'
+            matches = re.findall(citation_regex, content)
+            
+            for i, (title, url) in enumerate(matches):
+                citations.append({
+                    "id": i + 1,
+                    "title": title.strip(),
+                    "url": url.strip()
+                })
+            
+            logger.info(f"Extracted {len(citations)} citations from text")
         
         total_time = time.time() - start_time
         logger.info(f"OpenRouter Perplexity API: Total processing time: {total_time:.2f} seconds")
-                        
+        
         return content, citations
     except Exception as e:
         logger.error(f"Error using OpenRouter Perplexity API: {str(e)}")
